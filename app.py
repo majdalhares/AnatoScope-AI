@@ -27,8 +27,11 @@ st.markdown(
         color: #f8fbff;
         font-family: "Inter", "Segoe UI", sans-serif;
     }
+    header {visibility: hidden;}
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
     .block-container {
-        padding-top: 1.25rem;
+        padding-top: 1rem;
         padding-bottom: 2rem;
         max-width: 1500px;
     }
@@ -315,6 +318,23 @@ def build_pdf_report(summary_dict, warnings_list, total_frames, fps, output_path
     return output_path
 
 
+def get_medical_chat_response(prompt):
+    lower_prompt = prompt.lower()
+
+    if any(term in lower_prompt for term in ["bleeding", "hemorrhage", "blood loss"]):
+        return "Bleeding control is a priority. Confirm hemodynamic stability, check for visible vessel injury, review the operative field, and escalate to the surgeon or anesthesia team if there is brisk blood loss or instability."
+    if any(term in lower_prompt for term in ["infection", "sterile", "contamination"]):
+        return "Infection prevention should focus on aseptic technique, sterile field integrity, hand hygiene, and timely antibiotic prophylaxis per protocol. Reassess the field if contamination is suspected."
+    if any(term in lower_prompt for term in ["anesthesia", "sedation", "airway"]):
+        return "Airway and anesthesia safety require continuous monitoring of oxygenation, ventilation, hemodynamics, and patient response. Any sudden deterioration should trigger immediate escalation and airway reassessment."
+    if any(term in lower_prompt for term in ["recovery", "postop", "pain"]):
+        return "Postoperative recovery should include pain control, monitoring, early mobilization when appropriate, and prompt review of any new neurologic, respiratory, or cardiovascular symptoms."
+    if any(term in lower_prompt for term in ["suture", "staple", "incision"]):
+        return "Wound closure planning should balance tissue tension, hemostasis, and the expected healing environment. Follow institutional closure guidance and inspect the incision for signs of dehiscence or ischemia."
+
+    return "This is educational guidance only and does not replace clinical judgment. Please verify any recommendation with the supervising surgeon, anesthesia team, or institutional protocol before acting."
+
+
 def analyze_video(uploaded_file, conf_threshold, frame_skip):
     suffix = os.path.splitext(uploaded_file.name)[1] or ".mp4"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
@@ -414,12 +434,54 @@ def analyze_video(uploaded_file, conf_threshold, frame_skip):
     return output_video, dict(summary_counter), warnings_log, report_path
 
 
+if "medical_chat_messages" not in st.session_state:
+    st.session_state.medical_chat_messages = [
+        {
+            "role": "assistant",
+            "content": "Hello, I’m AnatoScope’s surgical AI assistant. I can help summarize perioperative risks, wound care considerations, anesthesia safety checks, and post-op recovery priorities.",
+        }
+    ]
+
+if "analysis_done" not in st.session_state:
+    st.session_state.analysis_done = False
+if "analysis_output_video" not in st.session_state:
+    st.session_state.analysis_output_video = None
+if "analysis_summary" not in st.session_state:
+    st.session_state.analysis_summary = {}
+if "analysis_warnings" not in st.session_state:
+    st.session_state.analysis_warnings = []
+if "analysis_report_path" not in st.session_state:
+    st.session_state.analysis_report_path = None
+if "analysis_metrics" not in st.session_state:
+    st.session_state.analysis_metrics = []
+if "analysis_uploaded_name" not in st.session_state:
+    st.session_state.analysis_uploaded_name = None
+
 with st.sidebar:
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
     st.header("⚙️ Analysis controls")
     confidence = st.slider("Confidence threshold", 0.1, 0.95, 0.30, 0.05)
     frame_skip = st.slider("Frame skip", 1, 8, 2)
     st.caption("Lower values produce more detail, while higher values speed up analysis.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+    st.subheader("🩺 Medical Chatbot")
+    st.caption("Ask for quick surgical guidance or perioperative safety reminders.")
+    for message in st.session_state.medical_chat_messages:
+        with st.sidebar.chat_message(message["role"]):
+            st.write(message["content"])
+
+    prompt = st.sidebar.chat_input("Ask about surgery, anesthesia, or recovery")
+    if prompt:
+        st.session_state.medical_chat_messages.append({"role": "user", "content": prompt})
+        with st.sidebar.chat_message("user"):
+            st.write(prompt)
+
+        response = get_medical_chat_response(prompt)
+        st.session_state.medical_chat_messages.append({"role": "assistant", "content": response})
+        with st.sidebar.chat_message("assistant"):
+            st.write(response)
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -445,10 +507,19 @@ with col4:
     render_metric_card("Detections", "0", "👁️", "Awaiting first analysis")
 
 st.markdown("<div class='upload-shell'>", unsafe_allow_html=True)
-uploaded_file = st.file_uploader("Upload a surgery video", type=["mp4", "avi", "mov"])
+uploaded_file = st.file_uploader("Upload a surgery video", type=["mp4", "avi", "mov"], key="video_uploader")
 st.markdown("</div>", unsafe_allow_html=True)
 
 if uploaded_file is not None:
+    if st.session_state.analysis_uploaded_name != uploaded_file.name:
+        st.session_state.analysis_done = False
+        st.session_state.analysis_output_video = None
+        st.session_state.analysis_summary = {}
+        st.session_state.analysis_warnings = []
+        st.session_state.analysis_report_path = None
+        st.session_state.analysis_metrics = []
+        st.session_state.analysis_uploaded_name = uploaded_file.name
+
     st.markdown(
         f"""
         <div class="glass-card">
@@ -468,7 +539,12 @@ if uploaded_file is not None:
 
             total_detections = sum(summary.values())
             safety_score = max(100 - len(warnings) * 12, 0)
-            metrics = [
+            st.session_state.analysis_done = True
+            st.session_state.analysis_output_video = output_video
+            st.session_state.analysis_summary = summary
+            st.session_state.analysis_warnings = warnings
+            st.session_state.analysis_report_path = report_path
+            st.session_state.analysis_metrics = [
                 ("Tools Tracked", str(len(summary)), "🛠️", "Unique anatomy and tool classes detected"),
                 ("Safety Score", f"{safety_score}%", "🩺", "Collision risk after inspection"),
                 (
@@ -479,48 +555,51 @@ if uploaded_file is not None:
                 ),
                 ("Detections", str(total_detections), "👁️", "Instance signals across sampled frames"),
             ]
-
-            metric_cols = st.columns(4)
-            for col, metric in zip(metric_cols, metrics):
-                with col:
-                    render_metric_card(*metric)
-
-            video_tab, analytics_tab, report_tab = st.tabs(["Video Inspection", "Real-Time Analytics", "Export & Safety Reports"])
-
-            with video_tab:
-                st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-                st.subheader("Annotated video")
-                st.video(output_video)
-                st.markdown("</div>", unsafe_allow_html=True)
-
-            with analytics_tab:
-                st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-                st.subheader("Detection breakdown")
-                summary_df = pd.DataFrame([{"Element": key, "Frames detected": value} for key, value in sorted(summary.items())])
-                st.dataframe(summary_df, use_container_width=True)
-                st.markdown("</div>", unsafe_allow_html=True)
-
-            with report_tab:
-                st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-                st.subheader("Safety warnings")
-                if warnings:
-                    for warning in warnings:
-                        st.error(warning)
-                else:
-                    st.success("No collision events were detected.")
-                st.markdown("</div>", unsafe_allow_html=True)
-
-                with open(report_path, "rb") as pdf_file:
-                    st.download_button("Download PDF report", pdf_file, file_name="AnatoScope_Report.pdf", mime="application/pdf")
         except Exception as exc:
+            st.session_state.analysis_done = False
             st.error(f"Analysis failed: {exc}")
+
+if st.session_state.analysis_done and st.session_state.analysis_report_path is not None:
+    metric_cols = st.columns(4)
+    for col, metric in zip(metric_cols, st.session_state.analysis_metrics):
+        with col:
+            render_metric_card(*metric)
+
+    video_tab, analytics_tab, report_tab = st.tabs(["Video Inspection", "Real-Time Analytics", "Export & Safety Reports"])
+
+    with video_tab:
+        st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+        st.subheader("Annotated video")
+        st.video(st.session_state.analysis_output_video)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with analytics_tab:
+        st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+        st.subheader("Detection breakdown")
+        summary_df = pd.DataFrame([{"Element": key, "Frames detected": value} for key, value in sorted(st.session_state.analysis_summary.items())])
+        st.dataframe(summary_df, use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    with report_tab:
+        st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+        st.subheader("Safety warnings")
+        if st.session_state.analysis_warnings:
+            for warning in st.session_state.analysis_warnings:
+                st.error(warning)
+        else:
+            st.success("No collision events were detected.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        with open(st.session_state.analysis_report_path, "rb") as pdf_file:
+            st.download_button("Download PDF report", pdf_file, file_name="AnatoScope_Report.pdf", mime="application/pdf", key="download_pdf_report")
 else:
-    st.markdown(
-        """
-        <div class="glass-card">
-            <h4 style="margin-top:0;">Ready for surgical inspection</h4>
-            <p style="margin-bottom:0;">Upload a surgery video to inspect anatomy, track tools, identify possible mask collisions, and export a safety report.</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    if uploaded_file is None:
+        st.markdown(
+            """
+            <div class="glass-card">
+                <h4 style="margin-top:0;">Ready for surgical inspection</h4>
+                <p style="margin-bottom:0;">Upload a surgery video to inspect anatomy, track tools, identify possible mask collisions, and export a safety report.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
