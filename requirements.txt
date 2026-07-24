@@ -2,5 +2,3 @@ streamlit
 ultralytics
 opencv-python-headless
 reportlab
-pandas
-numpy==1.26.4
