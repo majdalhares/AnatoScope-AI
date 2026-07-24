@@ -1,0 +1,7 @@
+gradio
+ultralytics
+opencv-python-headless
+reportlab
+torch
+pandas
+numpy
