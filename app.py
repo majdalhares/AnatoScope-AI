@@ -1,4 +1,5 @@
 import os
+import subprocess
 import tempfile
 from collections import Counter
 
@@ -325,6 +326,26 @@ def get_medical_chat_response(prompt):
     return "This is educational guidance only and does not replace clinical judgment. Please verify any recommendation with the supervising surgeon, anesthesia team, or institutional protocol before acting."
 
 
+def convert_to_browser_compatible(input_path, output_path):
+    """
+    تحويل ترميز الفيديو إلى H.264 / YUV420p ليكون متوافقاً مع كافة متصفحات الويب 100%
+    """
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i", input_path,
+        "-vcodec", "libx264",
+        "-pix_fmt", "yuv420p",
+        "-movflags", "+faststart",
+        output_path
+    ]
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return output_path
+    except Exception:
+        return input_path
+
+
 def analyze_video(uploaded_file, conf_threshold, frame_skip):
     suffix = os.path.splitext(uploaded_file.name)[1] or ".mp4"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
@@ -343,13 +364,11 @@ def analyze_video(uploaded_file, conf_threshold, frame_skip):
     target_width = 640
     target_height = int(height * (target_width / width)) if width > 0 else 360
 
-    output_video = os.path.join(tempfile.gettempdir(), "surgical_analysis_output.mp4")
-    # استخدام الترميز المتوافق كلياً مع المتصفحات (H264 / avc1 / mp4v)
-    fourcc = cv2.VideoWriter_fourcc(*"avc1")
-    out = cv2.VideoWriter(output_video, fourcc, fps, (target_width, target_height))
-    if not out.isOpened():
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        out = cv2.VideoWriter(output_video, fourcc, fps, (target_width, target_height))
+    raw_output_video = os.path.join(tempfile.gettempdir(), "raw_surgical_output.mp4")
+    final_output_video = os.path.join(tempfile.gettempdir(), "browser_surgical_output.mp4")
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(raw_output_video, fourcc, fps, (target_width, target_height))
 
     summary_counter = Counter()
     warnings_log = []
@@ -421,11 +440,14 @@ def analyze_video(uploaded_file, conf_threshold, frame_skip):
 
     cap.release()
     out.release()
-    os.remove(temp_path)
+    if os.path.exists(temp_path):
+        os.remove(temp_path)
+
+    ready_video = convert_to_browser_compatible(raw_output_video, final_output_video)
 
     report_path = os.path.join(tempfile.gettempdir(), "anatoscope_report.pdf")
     build_pdf_report(dict(summary_counter), warnings_log, total_frames, fps, report_path)
-    return output_video, dict(summary_counter), warnings_log, report_path
+    return ready_video, dict(summary_counter), warnings_log, report_path
 
 
 # --- Session State Initializations ---
@@ -572,7 +594,6 @@ with main_tab1:
             st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
             st.subheader("Annotated video")
             
-            # قراءة الملف كبيانات ثنائية لتجنب مشكلة الشاشة السوداء في المتصفح
             if os.path.exists(st.session_state.analysis_output_video):
                 with open(st.session_state.analysis_output_video, "rb") as vid_file:
                     video_bytes = vid_file.read()
@@ -610,12 +631,10 @@ with main_tab2:
     img_file_buffer = st.camera_input("Take a snapshot from live feed")
 
     if img_file_buffer is not None:
-        # تحويل الصورة الملتقطة إلى صيغة OpenCV
         bytes_data = img_file_buffer.getvalue()
         cv2_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
         
         with st.spinner("Analyzing live snapshot..."):
-            # إجراء الفحص التفاعلي السريع
             tools_res = tools_model(cv2_img, conf=confidence)[0]
             anatomy_res = anatomy_model(cv2_img, conf=confidence)[0]
             
@@ -630,7 +649,6 @@ with main_tab2:
             if tools_res.boxes is not None:
                 annotated_frame = tools_res.plot(img=annotated_frame, conf=False)
             
-            # تحويل الألوان للـ Streamlit
             annotated_frame_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
             
             col_live1, col_live2 = st.columns(2)
