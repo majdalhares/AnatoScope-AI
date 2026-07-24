@@ -171,15 +171,6 @@ st.markdown(
         color: #ffffff !important;
         border-bottom: 2px solid #00f2fe;
     }
-    .stDataFrame, .stTable {
-        border-radius: 14px;
-        overflow: hidden;
-    }
-    .stAlert {
-        border-radius: 14px;
-        border: 1px solid rgba(79, 172, 254, 0.22);
-        background: rgba(7, 17, 34, 0.84);
-    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -320,7 +311,6 @@ def build_pdf_report(summary_dict, warnings_list, total_frames, fps, output_path
 
 def get_medical_chat_response(prompt):
     lower_prompt = prompt.lower()
-
     if any(term in lower_prompt for term in ["bleeding", "hemorrhage", "blood loss"]):
         return "Bleeding control is a priority. Confirm hemodynamic stability, check for visible vessel injury, review the operative field, and escalate to the surgeon or anesthesia team if there is brisk blood loss or instability."
     if any(term in lower_prompt for term in ["infection", "sterile", "contamination"]):
@@ -353,9 +343,13 @@ def analyze_video(uploaded_file, conf_threshold, frame_skip):
     target_width = 640
     target_height = int(height * (target_width / width)) if width > 0 else 360
 
-    output_video = "surgical_analysis_output.mp4"
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    output_video = os.path.join(tempfile.gettempdir(), "surgical_analysis_output.mp4")
+    # استخدام الترميز المتوافق كلياً مع المتصفحات (H264 / avc1 / mp4v)
+    fourcc = cv2.VideoWriter_fourcc(*"avc1")
     out = cv2.VideoWriter(output_video, fourcc, fps, (target_width, target_height))
+    if not out.isOpened():
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        out = cv2.VideoWriter(output_video, fourcc, fps, (target_width, target_height))
 
     summary_counter = Counter()
     warnings_log = []
@@ -423,7 +417,7 @@ def analyze_video(uploaded_file, conf_threshold, frame_skip):
                                 unique_warnings.add(warning)
                                 warnings_log.append(warning)
 
-            out.write(cv2.cvtColor(annotated_frame, cv2.COLOR_RGB2BGR))
+            out.write(annotated_frame)
 
     cap.release()
     out.release()
@@ -434,11 +428,12 @@ def analyze_video(uploaded_file, conf_threshold, frame_skip):
     return output_video, dict(summary_counter), warnings_log, report_path
 
 
+# --- Session State Initializations ---
 if "medical_chat_messages" not in st.session_state:
     st.session_state.medical_chat_messages = [
         {
             "role": "assistant",
-            "content": "Hello, I’m AnatoScope’s surgical AI assistant. I can help summarize perioperative risks, wound care considerations, anesthesia safety checks, and post-op recovery priorities.",
+            "content": "Hello, I’m AnatoScope’s surgical AI assistant. Ask me anything about surgical procedures, risks, or recovery.",
         }
     ]
 
@@ -457,6 +452,7 @@ if "analysis_metrics" not in st.session_state:
 if "analysis_uploaded_name" not in st.session_state:
     st.session_state.analysis_uploaded_name = None
 
+# --- Sidebar ---
 with st.sidebar:
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
     st.header("⚙️ Analysis controls")
@@ -485,6 +481,7 @@ with st.sidebar:
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+# --- Main Dashboard ---
 st.markdown(
     """
     <div class="hero-card">
@@ -496,110 +493,149 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-col1, col2, col3, col4 = st.columns(4)
-with col1:
-    render_metric_card("Tools Tracked", "Ready", "🛠️", "Uploads begin a live scan")
-with col2:
-    render_metric_card("Safety Score", "98%", "🩺", "Collision monitoring active")
-with col3:
-    render_metric_card("Frame Rate", "24 fps", "⚡", "Optimized stream processing")
-with col4:
-    render_metric_card("Detections", "0", "👁️", "Awaiting first analysis")
+# Tabs Navigation
+main_tab1, main_tab2 = st.tabs(["📁 Video File Analysis", "📹 Live Endoscope / Camera Feed"])
 
-st.markdown("<div class='upload-shell'>", unsafe_allow_html=True)
-uploaded_file = st.file_uploader("Upload a surgery video", type=["mp4", "avi", "mov"], key="video_uploader")
-st.markdown("</div>", unsafe_allow_html=True)
+with main_tab1:
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        render_metric_card("Tools Tracked", "Ready", "🛠️", "Uploads begin a live scan")
+    with col2:
+        render_metric_card("Safety Score", "98%", "🩺", "Collision monitoring active")
+    with col3:
+        render_metric_card("Frame Rate", "24 fps", "⚡", "Optimized stream processing")
+    with col4:
+        render_metric_card("Detections", "0", "👁️", "Awaiting first analysis")
 
-if uploaded_file is not None:
-    if st.session_state.analysis_uploaded_name != uploaded_file.name:
-        st.session_state.analysis_done = False
-        st.session_state.analysis_output_video = None
-        st.session_state.analysis_summary = {}
-        st.session_state.analysis_warnings = []
-        st.session_state.analysis_report_path = None
-        st.session_state.analysis_metrics = []
-        st.session_state.analysis_uploaded_name = uploaded_file.name
+    st.markdown("<div class='upload-shell'>", unsafe_allow_html=True)
+    uploaded_file = st.file_uploader("Upload a surgery video", type=["mp4", "avi", "mov"], key="video_uploader")
+    st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown(
-        f"""
-        <div class="glass-card">
-            <strong>Loaded:</strong> {uploaded_file.name} ({round(uploaded_file.size / (1024 * 1024), 2)} MB)
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    if st.button("Run surgical analysis", type="primary", use_container_width=True):
-        progress = st.progress(0)
-        status = st.empty()
-        try:
-            with st.spinner("Running deep surgical inspection..."):
-                output_video, summary, warnings, report_path = analyze_video(uploaded_file, confidence, frame_skip)
-            progress.progress(1.0)
-            status.success("Analysis complete")
-
-            total_detections = sum(summary.values())
-            safety_score = max(100 - len(warnings) * 12, 0)
-            st.session_state.analysis_done = True
-            st.session_state.analysis_output_video = output_video
-            st.session_state.analysis_summary = summary
-            st.session_state.analysis_warnings = warnings
-            st.session_state.analysis_report_path = report_path
-            st.session_state.analysis_metrics = [
-                ("Tools Tracked", str(len(summary)), "🛠️", "Unique anatomy and tool classes detected"),
-                ("Safety Score", f"{safety_score}%", "🩺", "Collision risk after inspection"),
-                (
-                    "Frame Rate",
-                    f"{device.upper()} · {torch.cuda.get_device_name(0) if device == 'cuda' else 'CPU'}",
-                    "⚡",
-                    "Processing backend",
-                ),
-                ("Detections", str(total_detections), "👁️", "Instance signals across sampled frames"),
-            ]
-        except Exception as exc:
+    if uploaded_file is not None:
+        if st.session_state.analysis_uploaded_name != uploaded_file.name:
             st.session_state.analysis_done = False
-            st.error(f"Analysis failed: {exc}")
+            st.session_state.analysis_output_video = None
+            st.session_state.analysis_summary = {}
+            st.session_state.analysis_warnings = []
+            st.session_state.analysis_report_path = None
+            st.session_state.analysis_metrics = []
+            st.session_state.analysis_uploaded_name = uploaded_file.name
 
-if st.session_state.analysis_done and st.session_state.analysis_report_path is not None:
-    metric_cols = st.columns(4)
-    for col, metric in zip(metric_cols, st.session_state.analysis_metrics):
-        with col:
-            render_metric_card(*metric)
-
-    video_tab, analytics_tab, report_tab = st.tabs(["Video Inspection", "Real-Time Analytics", "Export & Safety Reports"])
-
-    with video_tab:
-        st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-        st.subheader("Annotated video")
-        st.video(st.session_state.analysis_output_video)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    with analytics_tab:
-        st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-        st.subheader("Detection breakdown")
-        summary_df = pd.DataFrame([{"Element": key, "Frames detected": value} for key, value in sorted(st.session_state.analysis_summary.items())])
-        st.dataframe(summary_df, use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    with report_tab:
-        st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
-        st.subheader("Safety warnings")
-        if st.session_state.analysis_warnings:
-            for warning in st.session_state.analysis_warnings:
-                st.error(warning)
-        else:
-            st.success("No collision events were detected.")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        with open(st.session_state.analysis_report_path, "rb") as pdf_file:
-            st.download_button("Download PDF report", pdf_file, file_name="AnatoScope_Report.pdf", mime="application/pdf", key="download_pdf_report")
-else:
-    if uploaded_file is None:
         st.markdown(
-            """
+            f"""
             <div class="glass-card">
-                <h4 style="margin-top:0;">Ready for surgical inspection</h4>
-                <p style="margin-bottom:0;">Upload a surgery video to inspect anatomy, track tools, identify possible mask collisions, and export a safety report.</p>
+                <strong>Loaded:</strong> {uploaded_file.name} ({round(uploaded_file.size / (1024 * 1024), 2)} MB)
             </div>
             """,
             unsafe_allow_html=True,
         )
+        if st.button("Run surgical analysis", type="primary", use_container_width=True):
+            progress = st.progress(0)
+            status = st.empty()
+            try:
+                with st.spinner("Running deep surgical inspection..."):
+                    output_video, summary, warnings, report_path = analyze_video(uploaded_file, confidence, frame_skip)
+                progress.progress(1.0)
+                status.success("Analysis complete")
+
+                total_detections = sum(summary.values())
+                safety_score = max(100 - len(warnings) * 12, 0)
+                st.session_state.analysis_done = True
+                st.session_state.analysis_output_video = output_video
+                st.session_state.analysis_summary = summary
+                st.session_state.analysis_warnings = warnings
+                st.session_state.analysis_report_path = report_path
+                st.session_state.analysis_metrics = [
+                    ("Tools Tracked", str(len(summary)), "🛠️", "Unique anatomy and tool classes detected"),
+                    ("Safety Score", f"{safety_score}%", "🩺", "Collision risk after inspection"),
+                    (
+                        "Frame Rate",
+                        f"{device.upper()} · {torch.cuda.get_device_name(0) if device == 'cuda' else 'CPU'}",
+                        "⚡",
+                        "Processing backend",
+                    ),
+                    ("Detections", str(total_detections), "👁️", "Instance signals across sampled frames"),
+                ]
+            except Exception as exc:
+                st.session_state.analysis_done = False
+                st.error(f"Analysis failed: {exc}")
+
+    if st.session_state.analysis_done and st.session_state.analysis_report_path is not None:
+        metric_cols = st.columns(4)
+        for col, metric in zip(metric_cols, st.session_state.analysis_metrics):
+            with col:
+                render_metric_card(*metric)
+
+        video_tab, analytics_tab, report_tab = st.tabs(["Video Inspection", "Real-Time Analytics", "Export & Safety Reports"])
+
+        with video_tab:
+            st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+            st.subheader("Annotated video")
+            
+            # قراءة الملف كبيانات ثنائية لتجنب مشكلة الشاشة السوداء في المتصفح
+            if os.path.exists(st.session_state.analysis_output_video):
+                with open(st.session_state.analysis_output_video, "rb") as vid_file:
+                    video_bytes = vid_file.read()
+                st.video(video_bytes, format="video/mp4")
+            else:
+                st.error("Output video file not found.")
+                
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        with analytics_tab:
+            st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+            st.subheader("Detection breakdown")
+            summary_df = pd.DataFrame([{"Element": key, "Frames detected": value} for key, value in sorted(st.session_state.analysis_summary.items())])
+            st.dataframe(summary_df, use_container_width=True)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        with report_tab:
+            st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+            st.subheader("Safety warnings")
+            if st.session_state.analysis_warnings:
+                for warning in st.session_state.analysis_warnings:
+                    st.error(warning)
+            else:
+                st.success("No collision events were detected.")
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            with open(st.session_state.analysis_report_path, "rb") as pdf_file:
+                st.download_button("Download PDF report", pdf_file, file_name="AnatoScope_Report.pdf", mime="application/pdf", key="download_pdf_report")
+
+with main_tab2:
+    st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+    st.subheader("📹 Real-Time Live Feed / Endoscope Inspection")
+    st.caption("Capture a frame from your endoscope camera for instantaneous AI detection and tool tracking.")
+    
+    img_file_buffer = st.camera_input("Take a snapshot from live feed")
+
+    if img_file_buffer is not None:
+        # تحويل الصورة الملتقطة إلى صيغة OpenCV
+        bytes_data = img_file_buffer.getvalue()
+        cv2_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+        
+        with st.spinner("Analyzing live snapshot..."):
+            # إجراء الفحص التفاعلي السريع
+            tools_res = tools_model(cv2_img, conf=confidence)[0]
+            anatomy_res = anatomy_model(cv2_img, conf=confidence)[0]
+            
+            annotated_frame = cv2_img.copy()
+            frame_shape = annotated_frame.shape[:2]
+
+            for mask in iter_mask_candidates(anatomy_res.masks):
+                mask_arr = resize_mask_to_frame(mask, frame_shape)
+                if mask_arr is not None:
+                    annotated_frame[mask_arr] = [0, 255, 0]
+
+            if tools_res.boxes is not None:
+                annotated_frame = tools_res.plot(img=annotated_frame, conf=False)
+            
+            # تحويل الألوان للـ Streamlit
+            annotated_frame_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+            
+            col_live1, col_live2 = st.columns(2)
+            with col_live1:
+                st.image(cv2.cvtColor(cv2_img, cv2.COLOR_BGR2RGB), caption="Original Frame", use_container_width=True)
+            with col_live2:
+                st.image(annotated_frame_rgb, caption="AI Annotated Frame", use_container_width=True)
+    st.markdown("</div>", unsafe_allow_html=True)
