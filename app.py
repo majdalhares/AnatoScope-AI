@@ -335,14 +335,18 @@ def convert_to_browser_compatible(input_path, output_path):
         "-y",
         "-i", input_path,
         "-vcodec", "libx264",
+        "-preset", "ultrafast",
         "-pix_fmt", "yuv420p",
         "-movflags", "+faststart",
         output_path
     ]
     try:
         subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        return output_path
-    except Exception:
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            return output_path
+        return input_path
+    except Exception as e:
+        st.warning(f"⚠️ يتعذر التحويل عبر FFmpeg ({e}). تم التبديل إلى المشغل الافتراضي.")
         return input_path
 
 
@@ -594,8 +598,9 @@ with main_tab1:
             st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
             st.subheader("Annotated video")
             
-            if os.path.exists(st.session_state.analysis_output_video):
-                with open(st.session_state.analysis_output_video, "rb") as vid_file:
+            output_vid_path = st.session_state.analysis_output_video
+            if output_vid_path and os.path.exists(output_vid_path):
+                with open(output_vid_path, "rb") as vid_file:
                     video_bytes = vid_file.read()
                 st.video(video_bytes, format="video/mp4")
             else:
@@ -626,34 +631,76 @@ with main_tab1:
 with main_tab2:
     st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
     st.subheader("📹 Real-Time Live Feed / Endoscope Inspection")
-    st.caption("Capture a frame from your endoscope camera for instantaneous AI detection and tool tracking.")
+    st.caption("Enable the camera manually below to start live scanning or take snapshots.")
     
-    img_file_buffer = st.camera_input("Take a snapshot from live feed")
+    # ------------------------------------------------------------------
+    # 💡 التحكم اليدوي في التشغيل والإيقاف (تجنب البدء التلقائي للكاميرا)
+    # ------------------------------------------------------------------
+    run_camera = st.toggle("🔌 Turn On Camera", value=False, key="camera_toggle_switch")
 
-    if img_file_buffer is not None:
-        bytes_data = img_file_buffer.getvalue()
-        cv2_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
-        
-        with st.spinner("Analyzing live snapshot..."):
-            tools_res = tools_model(cv2_img, conf=confidence)[0]
-            anatomy_res = anatomy_model(cv2_img, conf=confidence)[0]
-            
-            annotated_frame = cv2_img.copy()
-            frame_shape = annotated_frame.shape[:2]
+    if not run_camera:
+        st.info("💡 Camera is currently OFF. Switch on the toggle above to start live feed or camera input.")
+    else:
+        camera_option = st.radio("Select Input Type:", ["Camera Snapshot", "Live Webcam Stream"], horizontal=True)
 
-            for mask in iter_mask_candidates(anatomy_res.masks):
-                mask_arr = resize_mask_to_frame(mask, frame_shape)
-                if mask_arr is not None:
-                    annotated_frame[mask_arr] = [0, 255, 0]
+        if camera_option == "Camera Snapshot":
+            img_file_buffer = st.camera_input("Take a snapshot from live feed")
 
-            if tools_res.boxes is not None:
-                annotated_frame = tools_res.plot(img=annotated_frame, conf=False)
+            if img_file_buffer is not None:
+                bytes_data = img_file_buffer.getvalue()
+                cv2_img = cv2.imdecode(np.frombuffer(bytes_data, np.uint8), cv2.IMREAD_COLOR)
+                
+                with st.spinner("Analyzing live snapshot..."):
+                    tools_res = tools_model(cv2_img, conf=confidence)[0]
+                    anatomy_res = anatomy_model(cv2_img, conf=confidence)[0]
+                    
+                    annotated_frame = cv2_img.copy()
+                    frame_shape = annotated_frame.shape[:2]
+
+                    for mask in iter_mask_candidates(anatomy_res.masks):
+                        mask_arr = resize_mask_to_frame(mask, frame_shape)
+                        if mask_arr is not None:
+                            annotated_frame[mask_arr] = [0, 255, 0]
+
+                    if tools_res.boxes is not None:
+                        annotated_frame = tools_res.plot(img=annotated_frame, conf=False)
+                    
+                    annotated_frame_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+                    
+                    col_live1, col_live2 = st.columns(2)
+                    with col_live1:
+                        st.image(cv2.cvtColor(cv2_img, cv2.COLOR_BGR2RGB), caption="Original Frame", use_container_width=True)
+                    with col_live2:
+                        st.image(annotated_frame_rgb, caption="AI Annotated Frame", use_container_width=True)
+
+        elif camera_option == "Live Webcam Stream":
+            st.warning("⚡ Connecting to live feed... Toggle OFF above anytime to stop.")
+            cap = cv2.VideoCapture(0)
+            frame_placeholder = st.empty()
             
-            annotated_frame_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
-            
-            col_live1, col_live2 = st.columns(2)
-            with col_live1:
-                st.image(cv2.cvtColor(cv2_img, cv2.COLOR_BGR2RGB), caption="Original Frame", use_container_width=True)
-            with col_live2:
-                st.image(annotated_frame_rgb, caption="AI Annotated Frame", use_container_width=True)
+            while cap.isOpened() and run_camera:
+                ret, frame = cap.read()
+                if not ret:
+                    st.error("Unable to connect to camera device.")
+                    break
+
+                tools_res = tools_model(frame, conf=confidence)[0]
+                anatomy_res = anatomy_model(frame, conf=confidence)[0]
+
+                annotated_frame = frame.copy()
+                frame_shape = annotated_frame.shape[:2]
+
+                for mask in iter_mask_candidates(anatomy_res.masks):
+                    mask_arr = resize_mask_to_frame(mask, frame_shape)
+                    if mask_arr is not None:
+                        annotated_frame[mask_arr] = [0, 255, 0]
+
+                if tools_res.boxes is not None:
+                    annotated_frame = tools_res.plot(img=annotated_frame, conf=False)
+
+                frame_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+                frame_placeholder.image(frame_rgb, caption="Live AI Analysis Stream", use_container_width=True)
+
+            cap.release()
+
     st.markdown("</div>", unsafe_allow_html=True)
